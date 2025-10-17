@@ -3,23 +3,57 @@ import { NextResponse } from "next/server";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+/** Exact sizes supported by the OpenAI Images API (SDK typing union). */
+type AllowedSize =
+  | "auto"
+  | "256x256"
+  | "512x512"
+  | "1024x1024"
+  | "1024x1536"
+  | "1536x1024"
+  | "1024x1792"
+  | "1792x1024";
+
+/** Runtime set for validation + TS type guard. */
+const ALLOWED_SIZES: ReadonlySet<AllowedSize> = new Set<AllowedSize>([
+  "auto",
+  "256x256",
+  "512x512",
+  "1024x1024",
+  "1024x1536",
+  "1536x1024",
+  "1024x1792",
+  "1792x1024",
+]);
+
+function isAllowedSize(s: unknown): s is AllowedSize {
+  return typeof s === "string" && (ALLOWED_SIZES as Set<string>).has(s);
+}
+
+const DEFAULT_SIZE: AllowedSize = "1536x1024";
+
 type GenerateBody = {
-  prompt?: string;
-  size?: "1536x1024" | "1024x1024" | "1792x1024" | "1024x1792" | string;
+  prompt?: unknown;
+  size?: unknown;
 };
 
 export async function POST(req: Request) {
   try {
-    const { prompt, size }: GenerateBody = await req.json();
+    const body: GenerateBody = await req.json();
 
-    if (!prompt || typeof prompt !== "string") {
+    // Validate prompt
+    if (typeof body.prompt !== "string" || !body.prompt.trim()) {
       return NextResponse.json({ error: "Missing prompt." }, { status: 400 });
     }
+    const prompt = body.prompt;
+
+    // Validate & narrow size to the SDK's union type
+    const size: AllowedSize = isAllowedSize(body.size) ? body.size : DEFAULT_SIZE;
 
     const result = await openai.images.generate({
       model: "gpt-image-1",
       prompt,
-      size: size || "1536x1024",
+      size, // <-- now strictly AllowedSize (no widening to string)
     });
 
     const b64 = result.data?.[0]?.b64_json;
@@ -29,23 +63,22 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ imageUrl: `data:image/png;base64,${b64}` });
   } catch (err: unknown) {
-    // Narrow the error to surface a useful message without using `any`
+    // Safe error narrowing without using `any`
     let message = "Image generation failed.";
     let status = 500;
 
     if (typeof err === "object" && err !== null) {
-      const maybeError = err as { message?: string; status?: number; response?: { data?: { error?: { message?: string } } } };
-      message =
-        maybeError.response?.data?.error?.message ??
-        maybeError.message ??
-        message;
-      status = typeof maybeError.status === "number" ? maybeError.status : status;
+      const e = err as {
+        message?: string;
+        status?: number;
+        response?: { data?: { error?: { message?: string } } };
+      };
+      message = e.response?.data?.error?.message ?? e.message ?? message;
+      status = typeof e.status === "number" ? e.status : status;
     }
 
-    // Log full error for server diagnostics
     // eslint-disable-next-line no-console
     console.error("OpenAI image error:", err);
-
     return NextResponse.json({ error: message }, { status });
   }
 }
