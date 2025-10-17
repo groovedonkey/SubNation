@@ -1,8 +1,6 @@
 import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 /** Exact sizes supported by the OpenAI Images API (SDK typing union). */
 type AllowedSize =
   | "auto"
@@ -47,13 +45,24 @@ export async function POST(req: Request) {
     }
     const prompt = body.prompt;
 
-    // Validate & narrow size to the SDK's union type
+    // Validate & narrow size
     const size: AllowedSize = isAllowedSize(body.size) ? body.size : DEFAULT_SIZE;
+
+    // ✅ Instantiate OpenAI *inside* the handler so builds won't crash
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      // Return a clean error at runtime instead of throwing at build time
+      return NextResponse.json(
+        { error: "Server is missing OPENAI_API_KEY." },
+        { status: 500 }
+      );
+    }
+    const openai = new OpenAI({ apiKey });
 
     const result = await openai.images.generate({
       model: "gpt-image-1",
       prompt,
-      size, // <-- now strictly AllowedSize (no widening to string)
+      size,
     });
 
     const b64 = result.data?.[0]?.b64_json;
@@ -63,10 +72,8 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ imageUrl: `data:image/png;base64,${b64}` });
   } catch (err: unknown) {
-    // Safe error narrowing without using `any`
     let message = "Image generation failed.";
     let status = 500;
-
     if (typeof err === "object" && err !== null) {
       const e = err as {
         message?: string;
@@ -76,7 +83,6 @@ export async function POST(req: Request) {
       message = e.response?.data?.error?.message ?? e.message ?? message;
       status = typeof e.status === "number" ? e.status : status;
     }
-
     // eslint-disable-next-line no-console
     console.error("OpenAI image error:", err);
     return NextResponse.json({ error: message }, { status });
